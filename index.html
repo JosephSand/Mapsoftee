@@ -1,12 +1,12 @@
 
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mr. Softee - Berlin NJ Logistics</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Cargando Google Maps con parámetros para optimizar rendimiento y costos -->
+    <!-- Loading Google Maps with parameters for optimized performance and costs -->
     <script src="https://maps.googleapis.com/maps/api/js?v=3.exp&libraries=geometry"></script>
     
     <script type="module">
@@ -25,8 +25,10 @@
         let userRole = null;
         let currentUser = null;
         let watchId = null;
+        let unsubscribeOrders = null;
+        let unsubscribeTruck = null;
 
-        // Berlin, NJ - Centro de operación
+        // Berlin, NJ - Operations Center
         const BERLIN_NJ = { lat: 39.7912, lng: -74.9291 };
 
         window.togglePasswordInput = (role) => {
@@ -37,11 +39,35 @@
             }
         };
 
+        // Function to return to main menu
+        window.exitToMenu = () => {
+            // Stop GPS tracking if active
+            if (watchId) {
+                navigator.geolocation.clearWatch(watchId);
+                watchId = null;
+            }
+            
+            // Unsubscribe from Firestore listeners
+            if (unsubscribeOrders) unsubscribeOrders();
+            if (unsubscribeTruck) unsubscribeTruck();
+
+            // Reset UI
+            userRole = null;
+            document.getElementById('main-app').classList.add('hidden');
+            document.getElementById('client-controls').classList.add('hidden');
+            document.getElementById('driver-controls').classList.add('hidden');
+            document.getElementById('role-selection').classList.remove('hidden');
+            document.getElementById('password-container').classList.add('hidden');
+            document.getElementById('driver-password').value = '';
+            document.getElementById('tracking-status').innerText = "GPS ready to start";
+            document.getElementById('tracking-status').className = "text-center text-[10px] text-blue-200 font-bold uppercase tracking-widest";
+        };
+
         window.initApp = async (role) => {
             if (role === 'driver') {
                 const pass = document.getElementById('driver-password').value;
                 if (pass !== 'Tauro1996') {
-                    showToast("Contraseña incorrecta");
+                    showToast("Incorrect Password");
                     return;
                 }
             }
@@ -50,7 +76,7 @@
             document.getElementById('role-selection').classList.add('hidden');
             document.getElementById('main-app').classList.remove('hidden');
             
-            // Inicio de sesión automático requerido para Firestore
+            // Automatic login required for Firestore
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
@@ -58,7 +84,7 @@
                     await signInAnonymously(auth);
                 }
             } catch (err) {
-                console.error("Error de autenticación", err);
+                console.error("Authentication error", err);
             }
 
             onAuthStateChanged(auth, (user) => {
@@ -87,7 +113,8 @@
                 mapTypeControl: false,
                 streetViewControl: false,
                 fullscreenControl: false,
-                zoomControl: true
+                zoomControl: true,
+                gestureHandling: 'greedy'
             });
 
             truckMarker = new google.maps.Marker({
@@ -101,24 +128,28 @@
             });
         }
 
-        // FUNCIÓN CRÍTICA: Activa el GPS con reintento y manejo de errores
         window.startTruckTracking = () => {
             if (!navigator.geolocation) {
-                showToast("Tu teléfono no soporta GPS");
+                showToast("Your device does not support GPS");
                 return;
             }
 
-            document.getElementById('tracking-status').innerText = "Solicitando permiso de ubicación...";
-            
-            // Limpiar rastreo previo si existe
+            document.getElementById('tracking-status').innerText = "Requesting Location Permission...";
             if (watchId) navigator.geolocation.clearWatch(watchId);
+
+            const options = { 
+                enableHighAccuracy: true, 
+                timeout: 15000, 
+                maximumAge: 0 
+            };
 
             watchId = navigator.geolocation.watchPosition(
                 async (pos) => {
                     const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
                     truckMarker.setPosition(coords);
                     map.panTo(coords);
-                    document.getElementById('tracking-status').innerText = "Transmitiendo en vivo 📡";
+                    document.getElementById('tracking-status').innerText = "Broadcasting Live 📡";
+                    document.getElementById('tracking-status').className = "text-center text-[10px] text-green-400 font-bold uppercase tracking-widest";
 
                     if (currentUser) {
                         try {
@@ -127,32 +158,29 @@
                                 lng: coords.lng,
                                 updatedAt: new Date().getTime()
                             });
-                        } catch (e) { console.error("Error al guardar en nube:", e); }
+                        } catch (e) { console.error("Cloud save error:", e); }
                     }
                 },
                 (err) => {
-                    let msg = "Error de GPS";
-                    if (err.code === 1) msg = "Permiso denegado. Activa la ubicación en ajustes.";
-                    if (err.code === 2) msg = "Posición no disponible. Revisa tu señal.";
-                    if (err.code === 3) msg = "Tiempo de espera agotado.";
+                    let msg = "GPS Error";
+                    if (err.code === 1) msg = "Permission Denied. Please enable location in Chrome settings.";
+                    if (err.code === 2) msg = "Position unavailable. Check your signal.";
+                    if (err.code === 3) msg = "GPS Request Timed Out.";
                     showToast(msg);
-                    document.getElementById('tracking-status').innerText = "Error: " + msg;
+                    document.getElementById('tracking-status').innerText = "Status: " + msg;
+                    document.getElementById('tracking-status').className = "text-center text-[10px] text-red-400 font-bold uppercase tracking-widest";
                 },
-                { 
-                    enableHighAccuracy: true, // Usa GPS real, no solo WiFi
-                    timeout: 10000, 
-                    maximumAge: 0 
-                }
+                options
             );
         };
 
         function listenToOrders() {
             const ordersRef = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
-            onSnapshot(ordersRef, (snapshot) => {
+            unsubscribeOrders = onSnapshot(ordersRef, (snapshot) => {
                 const list = document.getElementById('orders-list');
                 list.innerHTML = '';
                 if (snapshot.empty) {
-                    list.innerHTML = '<p class="text-center text-gray-500 py-4 italic">No hay pedidos pendientes en Berlin.</p>';
+                    list.innerHTML = '<p class="text-center text-gray-500 py-4 italic">No pending orders in Berlin.</p>';
                     return;
                 }
                 snapshot.forEach((doc) => {
@@ -161,17 +189,17 @@
                     item.className = "bg-white p-4 rounded-2xl shadow-sm border border-blue-100 flex justify-between items-center mb-3 animate-fade-in";
                     item.innerHTML = `
                         <div>
-                            <p class="font-bold text-blue-900">Cliente esperando</p>
+                            <p class="font-bold text-blue-900">Waiting Customer</p>
                             <p class="text-[10px] text-gray-400 font-mono">${new Date(order.timestamp).toLocaleTimeString()}</p>
                         </div>
                         <div class="flex gap-2">
-                            <button onclick="window.goToLocation(${order.lat}, ${order.lng})" class="bg-blue-600 text-white px-5 py-2 rounded-xl text-sm font-bold shadow-md">IR</button>
+                            <button onclick="window.goToLocation(${order.lat}, ${order.lng})" class="bg-blue-600 text-white px-5 py-2 rounded-xl text-sm font-bold shadow-md">GO</button>
                             <button onclick="window.markAsVisited('${doc.id}')" class="bg-green-500 text-white px-4 py-2 rounded-xl text-sm shadow-md">✓</button>
                         </div>
                     `;
                     list.appendChild(item);
                 });
-            }, (err) => showToast("Error al conectar con pedidos"));
+            }, (err) => showToast("Error connecting to orders"));
         }
 
         window.goToLocation = (lat, lng) => {
@@ -182,27 +210,27 @@
             if (!currentUser) return;
             try {
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', orderId));
-                showToast("Ubicación completada");
-            } catch (e) { showToast("Error al borrar"); }
+                showToast("Location cleared");
+            } catch (e) { showToast("Error deleting"); }
         };
 
         function listenToTruckLocation() {
             const truckRef = doc(db, 'artifacts', appId, 'public', 'data', 'truck_location', 'current');
-            onSnapshot(truckRef, (doc) => {
+            unsubscribeTruck = onSnapshot(truckRef, (doc) => {
                 if (doc.exists()) {
                     const data = doc.data();
                     const pos = { lat: data.lat, lng: data.lng };
                     truckMarker.setPosition(pos);
                     map.panTo(pos);
-                    document.getElementById('status-text').innerText = "¡Mr. Softee está cerca!";
-                    document.getElementById('status-text').classList.replace('text-gray-400', 'text-green-600');
+                    document.getElementById('status-text').innerText = "Mr. Softee is nearby!";
+                    document.getElementById('status-text').className = "text-xs text-green-600 font-bold mb-4 uppercase tracking-widest";
                 }
             });
         }
 
         window.requestIceCream = () => {
             if (navigator.geolocation) {
-                showToast("Obteniendo tu ubicación...");
+                showToast("Getting your location...");
                 navigator.geolocation.getCurrentPosition(async (pos) => {
                     if (!currentUser) return;
                     try {
@@ -211,9 +239,9 @@
                             lng: pos.coords.longitude,
                             timestamp: new Date().getTime()
                         });
-                        showToast("🍦 ¡Pedido enviado! Mira el mapa.");
-                    } catch (e) { showToast("Error al enviar pedido"); }
-                }, (err) => showToast("Debes permitir el GPS para pedir"));
+                        showToast("🍦 Order Sent! Check the map.");
+                    } catch (e) { showToast("Error sending order"); }
+                }, (err) => showToast("You must allow GPS to request ice cream"));
             }
         };
 
@@ -230,7 +258,7 @@
     </script>
     <style>
         :root { --softee-blue: #0056b3; --softee-cream: #fffaf4; }
-        body { background-color: var(--softee-cream); font-family: system-ui, -apple-system, sans-serif; }
+        body { background-color: var(--softee-cream); font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
         #map { height: 45vh; width: 100%; border-radius: 2rem; }
         .hidden { display: none !important; }
         @keyframes fade-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
@@ -239,7 +267,7 @@
 </head>
 <body class="p-4 md:max-w-xl md:mx-auto">
 
-    <!-- Selección inicial -->
+    <!-- Initial Screen -->
     <div id="role-selection" class="flex flex-col items-center justify-center min-h-[90vh] space-y-8">
         <div class="text-center">
             <h1 class="text-6xl font-black text-blue-800 tracking-tighter italic">Mr. Softee</h1>
@@ -248,52 +276,55 @@
         
         <div class="w-full space-y-4 px-6">
             <button onclick="window.initApp('client')" class="w-full bg-white border-4 border-blue-600 text-blue-700 font-black py-6 rounded-3xl shadow-xl active:scale-95 transition-all text-xl">
-                🍦 BUSCAR CAMIÓN
+                🍦 FIND TRUCK
             </button>
             
             <button onclick="togglePasswordInput('driver')" class="w-full bg-blue-600 text-white font-black py-6 rounded-3xl shadow-xl active:scale-95 transition-all text-xl">
-                🚛 SOY MR. SOFTEE
+                🚛 I AM MR. SOFTEE
             </button>
 
             <div id="password-container" class="hidden animate-fade-in bg-white p-6 rounded-3xl shadow-2xl border border-blue-100">
-                <input type="password" id="driver-password" class="w-full p-4 bg-gray-50 border-2 border-gray-100 rounded-2xl mb-4 focus:ring-4 ring-blue-100 outline-none" placeholder="Contraseña">
-                <button onclick="initApp('driver')" class="w-full bg-blue-800 text-white font-black py-4 rounded-2xl">INGRESAR</button>
+                <input type="password" id="driver-password" class="w-full p-4 bg-gray-50 border-2 border-gray-100 rounded-2xl mb-4 focus:ring-4 ring-blue-100 outline-none" placeholder="Password">
+                <button onclick="initApp('driver')" class="w-full bg-blue-800 text-white font-black py-4 rounded-2xl">LOGIN</button>
             </div>
         </div>
     </div>
 
-    <!-- Interfaz de la Aplicación -->
+    <!-- Main Application Interface -->
     <div id="main-app" class="hidden">
         <header class="flex justify-between items-center mb-4">
             <h1 class="text-2xl font-black text-blue-900">Mr. Softee <span class="text-blue-500 text-sm">NJ</span></h1>
-            <button onclick="location.reload()" class="text-[10px] font-bold bg-white border border-gray-200 px-3 py-1 rounded-full shadow-sm">SALIR</button>
+            <button onclick="window.exitToMenu()" class="text-[10px] font-bold bg-white border border-gray-200 px-4 py-2 rounded-full shadow-sm hover:bg-gray-50 uppercase">Exit</button>
         </header>
 
         <div id="map" class="mb-6 shadow-xl border-4 border-white"></div>
 
-        <!-- Controles para el Cliente -->
+        <!-- Client Controls -->
         <div id="client-controls" class="hidden">
             <div class="bg-white p-8 rounded-[2.5rem] shadow-xl border-t-8 border-blue-600 text-center">
-                <p id="status-text" class="text-xs text-gray-400 font-bold mb-4 uppercase tracking-widest">Localizando...</p>
+                <p id="status-text" class="text-xs text-gray-400 font-bold mb-4 uppercase tracking-widest">Locating Truck...</p>
                 <button onclick="requestIceCream()" class="w-full bg-blue-600 text-white font-black py-5 rounded-3xl shadow-lg active:scale-95 transition-all text-lg">
-                    📍 ¡QUIERO HELADO AQUÍ!
+                    📍 I WANT ICE CREAM HERE!
                 </button>
             </div>
         </div>
 
-        <!-- Controles para Mr. Softee -->
+        <!-- Mr. Softee Controls -->
         <div id="driver-controls" class="hidden space-y-6">
             <div class="bg-blue-900 p-6 rounded-3xl shadow-2xl">
                 <button onclick="startTruckTracking()" class="w-full bg-green-400 text-blue-950 font-black py-4 rounded-2xl shadow-lg mb-3 uppercase">
-                    📡 TRANSMITIR UBICACIÓN
+                    📡 BROADCAST LOCATION
                 </button>
-                <p id="tracking-status" class="text-center text-[10px] text-blue-200 font-bold uppercase tracking-widest">GPS listo para iniciar</p>
+                <p id="tracking-status" class="text-center text-[10px] text-blue-200 font-bold uppercase tracking-widest">GPS ready to start</p>
             </div>
 
             <div>
-                <h2 class="font-black text-blue-950 text-xl px-2 mb-4">CLIENTES ESPERANDO</h2>
+                <div class="flex justify-between items-center mb-4 px-2">
+                    <h2 class="font-black text-blue-950 text-xl">WAITING CUSTOMERS</h2>
+                    <span class="bg-blue-100 text-blue-700 text-[10px] px-2 py-1 rounded-full font-bold">LIVE NJ</span>
+                </div>
                 <div id="orders-list" class="space-y-3">
-                    <!-- Pedidos dinámicos -->
+                    <!-- Dynamic orders list -->
                 </div>
             </div>
         </div>
